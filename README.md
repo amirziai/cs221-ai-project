@@ -1,2 +1,5 @@
-# cs221-ai-project
-Stanford CS221 Artificial Intelligence Project
+# Stanford CS221 Artificial Intelligence Project
+
+- [Proposal doc](proposal.pdf)
+- [Proposal notebook](proposal.ipynb)
+- ...
