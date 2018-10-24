@@ -107,3 +107,6 @@ venv.bak/
 
 # exclude large datasets
 resources/datasets/kddcup*
+
+.DS_Store
+
