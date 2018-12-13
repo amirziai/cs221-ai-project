@@ -372,7 +372,7 @@ class NetworkIntrusionDetection:
                                                     data_for_plotting, i,
                                                     elapsed_train, elapsed_query, labeled_indices, semi_sup)
 
-    def _active_learning_for_learner_strategy(self, label: str, learner: Optional[BaseEstimator],
+    def _active_learning_for_learner_strategy(self, label: str, learner: BaseEstimator,
                                               sampling_strategy: Callable, active_learning_data: ActiveLearningData,
                                               semi_sup: bool = False) -> Stats:
         data_for_plotting = []
@@ -418,7 +418,7 @@ class NetworkIntrusionDetection:
 
     def _semi_supervised(self, label: str) -> List[Stats]:
         return [
-            self._active_learning_for_learner_strategy(label, LabelSpreading, sampling_strategy,
+            self._active_learning_for_learner_strategy(label, LabelSpreading(), sampling_strategy,
                                                        self._active_learning_data_split(label), semi_sup=True)
             for sampling_strategy in self.active_learning_strategies]
 
