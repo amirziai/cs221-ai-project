@@ -12,7 +12,7 @@ from pandas.core.frame import DataFrame
 from pandas.core.series import Series
 from scipy.stats.distributions import entropy
 from sklearn.base import BaseEstimator
-from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.ensemble import RandomForestClassifier, IsolationForest, GradientBoostingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, average_precision_score, \
     confusion_matrix
@@ -62,13 +62,14 @@ class NetworkIntrusionDetection:
         self.active_learning_rf = RandomForestClassifier(n_estimators=self.clf_n_estimator, n_jobs=-1,
                                                          random_state=self.random_seed)
         self.active_learning_lr = LogisticRegression(solver='lbfgs', random_state=self.random_seed)
+        self.active_learning_gb = GradientBoostingClassifier(n_estimators=self.clf_n_estimator)
         self.active_learning_learners = [self.active_learning_rf, self.active_learning_lr]
         self.active_learning_strategies = [random_sampling, entropy_sampling]
         self.active_learning_log_intervals = {1, 10, 25, 50, 100}
         self.active_learning_print_every = 25
         self.semi_supervised_class = LabelSpreading
         self.semi_supervised_class_args = {'kernel': 'knn', 'max_iter': 5, 'n_jobs': -1}
-        self.ensemble_weights = {'rf': 2, 'lr': 1, 'iforest': 1, 'lp': 1}
+        self.ensemble_weights = {'rf': 2, 'lr': 1, 'iforest': 1, 'gb': 1}
 
         np.random.seed(self.random_seed)
 
@@ -284,7 +285,7 @@ class NetworkIntrusionDetection:
         print(f'Label: {label}, learner: {learner_name}, sampling strategy: {sampling_strategy_name}')
         return file_path_pkl, file_path_csv, learner_name, sampling_strategy_name
 
-    def _active_learning_initial_training(self, semi_sup: bool, out, data_for_plotting: List[Stats],
+    def _active_learning_initial_training(self, semi_sup: bool, stats: Stats, data_for_plotting: List[Stats],
                                           learner: Optional[BaseEstimator], sampling_strategy: Callable,
                                           active_learning_data: ActiveLearningData,
                                           labeled_indices: List[int]) -> Tuple[ActiveSemiSup, Stats, List[Stats]]:
@@ -307,9 +308,9 @@ class NetworkIntrusionDetection:
         metrics = self._get_metrics(actual=active_learning_data.y_dev, predicted=predicted, scores=scores)
         data_for_plotting.append(self._get_plotting_row(-1, metrics, elapsed_train, elapsed_query))
         metrics = util.add_prefix_to_dict_keys(metrics, 'initial_')
-        out = util.merge_dicts(out, {'train time (s)': elapsed_train, 'query time (s)': elapsed_query})
-        out = util.merge_dicts(out, metrics)
-        return clf, out, data_for_plotting
+        stats = util.merge_dicts(stats, {'train time (s)': elapsed_train, 'query time (s)': elapsed_query})
+        stats = util.merge_dicts(stats, metrics)
+        return clf, stats, data_for_plotting
 
     @staticmethod
     def _initialize_stats(label: str, learner_name: str, sampling_strategy_name: str) -> Stats:
@@ -422,16 +423,17 @@ class NetworkIntrusionDetection:
                                                        self._active_learning_data_split(label), semi_sup=True)
             for sampling_strategy in self.active_learning_strategies]
 
-    def _ensemble_predictions(self, rf: ActiveLearner, lr: ActiveLearner, iforest: IsolationForest,
-                              lp: LabelSpreading, active_learning_date: ActiveLearningData):
-        x_dev = active_learning_date.x_dev
+    def _ensemble_predictions(self, rf: ActiveLearner, lr: ActiveLearner, gb: GradientBoostingClassifier,
+                              iforest: IsolationForest,
+                              active_learning_data: ActiveLearningData):
+        x_dev = active_learning_data.x_dev
         threshold = sum(self.ensemble_weights.values()) / 2
 
         return np.vstack([
             rf.predict(x_dev) * self.ensemble_weights['rf'],
             lr.predict(x_dev) * self.ensemble_weights['lr'],
             (iforest.predict(x_dev) == -1) * self.ensemble_weights['iforest'],
-            lp.predict(x_dev) * self.ensemble_weights['lp']
+            gb.predict(x_dev) * self.ensemble_weights['gb']
         ]).sum(axis=0) >= threshold
 
     def _generate_report(self, f: Callable):
@@ -453,11 +455,13 @@ class NetworkIntrusionDetection:
                                                           entropy_sampling, active_learning_data, [])
         lr, _, _ = self._active_learning_initial_training(False, stats, [], self.active_learning_lr,
                                                           entropy_sampling, active_learning_data, [])
+        gb, _, _ = self._active_learning_initial_training(False, stats, [], self.active_learning_gb,
+                                                          entropy_sampling, active_learning_data, [])
 
         # semi-supervised: label propagation
-        labeled_indices = []
-        lp, _, _ = self._active_learning_initial_training(True, stats, [], None, entropy_sampling,
-                                                          active_learning_data, labeled_indices)
+        # labeled_indices = []
+        # lp, _, _ = self._active_learning_initial_training(True, stats, [], None, entropy_sampling,
+        #                                                   active_learning_data, labeled_indices)
 
         # unsupervised
         prevalence = len(active_learning_data.y_train_start[active_learning_data.y_train_start == True]) / len(
@@ -466,7 +470,7 @@ class NetworkIntrusionDetection:
         x = pd.concat([active_learning_data.x_train_pool, active_learning_data.x_train_pool]).reset_index(drop=True)
         iforest.fit(x)
 
-        predictions = self._ensemble_predictions(rf, lr, iforest, lp, active_learning_data)
+        predictions = self._ensemble_predictions(rf, lr, iforest, gb, active_learning_data)
         metrics = self._get_metrics(active_learning_data.y_dev, predictions)
         data_for_plotting = [self._get_plotting_row(-1, metrics, 0, 0)]
         metrics = util.add_prefix_to_dict_keys(metrics, 'initial_')
@@ -475,16 +479,23 @@ class NetworkIntrusionDetection:
         for i in range(self.active_learning_budget):
             rf, _, _ = self._active_learning_single_query_supervised(rf, active_learning_data)
             lr, _, _ = self._active_learning_single_query_supervised(lr, active_learning_data)
-            lp, _, _ = self._active_learning_single_query_semi_sup(lp, labeled_indices, active_learning_data,
-                                                                   entropy_sampling)
+            gb, _, _ = self._active_learning_single_query_supervised(gb, active_learning_data)
+            # lp, _, _ = self._active_learning_single_query_semi_sup(lp, labeled_indices, active_learning_data,
+            #                                                        entropy_sampling)
 
-            predictions = self._ensemble_predictions(rf, lr, iforest, lp, active_learning_data)
+            predictions = self._ensemble_predictions(rf, lr, iforest, gb, active_learning_data)
             metrics = self._get_metrics(active_learning_data.y_dev, predictions)
 
             data_for_plotting.append(self._get_plotting_row(i, metrics, 0, 0))
             if i + 1 in self.active_learning_log_intervals:
                 metrics = util.add_prefix_to_dict_keys(metrics, f'sample_{i+1}_')
                 stats = util.merge_dicts(stats, metrics)
+
+        file_path_pkl, file_path_csv, learner_name, sampling_strategy_name = self._get_output_path(label,
+                                                                                                   VotingClassifier([]),
+                                                                                                   entropy_sampling)
+        util.pickle_object(stats, file_path_pkl)
+        util.write_as_csv(pd.DataFrame(data_for_plotting), file_path_csv)
 
         return stats
 
