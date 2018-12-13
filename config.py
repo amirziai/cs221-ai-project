@@ -1,4 +1,4 @@
-verbose = False
+verbose = True
 
 # data
 headers_link = 'http://kdd.ics.uci.edu/databases/kddcup99/kddcup.names'

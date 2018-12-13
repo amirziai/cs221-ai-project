@@ -73,7 +73,7 @@ class NetworkIntrusionDetection:
         self.active_learning_print_every = 25
         self.semi_supervised_class = LabelSpreading
         self.semi_supervised_class_args = {'kernel': 'knn', 'max_iter': 5, 'n_jobs': -1}
-        self.ensemble_weights = {'rf': 2, 'lr': 1, 'iforest': 1, 'gb': 1}
+        self.ensemble_weights = {'rf': 5, 'gb': 3, 'lr': 2, 'iforest': 1}
         self.round_to = config.round_to
         self.verbose = config.verbose
 
@@ -591,3 +591,11 @@ if __name__ == '__main__':
     print('Baseline and oracle std across labels')
     print(df_baseline_oracle.mean().std(2))
     print('=' * 10)
+    print('Active learning')
+    print(ni.report_active_learning())
+    print('=' * 10)
+    print('Active learning across labels')
+    print(ni.report_active_learning_across_labels())
+    print('=' * 10)
+    print('Active learning query time')
+    print(ni.report_active_learning_query_time())
