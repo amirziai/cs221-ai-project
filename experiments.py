@@ -67,7 +67,7 @@ class NetworkIntrusionDetection:
         self.active_learning_log_intervals = {1, 10, 25, 50, 100}
         self.active_learning_print_every = 25
         self.semi_supervised_class = LabelSpreading
-        self.semi_supervised_class_args = {'gamma': 0.25, 'max_iter': 5, 'n_jobs': 1}
+        self.semi_supervised_class_args = {'kernel': 'knn', 'max_iter': 5, 'n_jobs': -1}
         self.ensemble_weights = {'rf': 2, 'lr': 1, 'iforest': 1, 'lp': 1}
 
         np.random.seed(self.random_seed)
@@ -238,9 +238,11 @@ class NetworkIntrusionDetection:
                                         stats: Stats, data_for_plotting: List[Stats], i: int,
                                         elapsed_train: float,
                                         elapsed_query: float,
-                                        labeled_indices: List[int]) -> Tuple[Stats, List[Stats], List[int]]:
+                                        labeled_indices: List[int],
+                                        semi_sup: bool
+                                        ) -> Tuple[Stats, List[Stats], List[int]]:
         predicted = active_learner.predict(x_dev)
-        scores = active_learner.predict_proba(x_dev)[:, 1]
+        scores = None if semi_sup else active_learner.predict_proba(x_dev)[:, 1]
         metrics = self._get_metrics(actual=y_dev, predicted=predicted, scores=scores)
 
         data_for_plotting.append(self._get_plotting_row(i, metrics, elapsed_train, elapsed_query))
@@ -265,7 +267,7 @@ class NetworkIntrusionDetection:
         y_pool_labeled[labeled_indices] = y_pool[labeled_indices]
         x_out = pd.concat([x_start, x_pool]).reset_index(drop=True)
         y_out = pd.concat([y_start, y_pool_labeled]).reset_index(drop=True)
-        return x_out, y_out
+        return x_out, y_out.astype(np.int)
 
     @staticmethod
     def _get_random_index(indices: List[int]) -> int:
@@ -292,7 +294,7 @@ class NetworkIntrusionDetection:
                                                         active_learning_data.y_train_start,
                                                         active_learning_data.x_train_pool,
                                                         active_learning_data.y_train_pool, labeled_indices)
-            clf, elapsed_train = util.timer(clf.fit, **{'X': x, 'y': y.astype(np.int)})
+            clf, elapsed_train = util.timer(clf.fit, **{'X': x, 'y': y})
         else:
             clf, elapsed_train = util.timer(ActiveLearner, **dict(estimator=learner,
                                                                   query_strategy=sampling_strategy,
@@ -300,7 +302,8 @@ class NetworkIntrusionDetection:
                                                                   y_training=active_learning_data.y_train_start.values))
         predicted, elapsed_query = util.timer(clf.predict, **{'X': active_learning_data.x_dev})
         predicted = clf.predict(active_learning_data.x_dev)
-        scores = clf.predict_proba(active_learning_data.x_dev)[:, 1]  # positive class probabilities
+        # [:, 1] to get positive class probabilities, semi-sup probabilities can be NaN so skip
+        scores = None if semi_sup else clf.predict_proba(active_learning_data.x_dev)[:, 1]
         metrics = self._get_metrics(actual=active_learning_data.y_dev, predicted=predicted, scores=scores)
         data_for_plotting.append(self._get_plotting_row(-1, metrics, elapsed_train, elapsed_query))
         metrics = util.add_prefix_to_dict_keys(metrics, 'initial_')
@@ -367,7 +370,7 @@ class NetworkIntrusionDetection:
 
         return self._active_learning_update_metrics(clf, active_learning_data.x_dev, active_learning_data.y_dev, stats,
                                                     data_for_plotting, i,
-                                                    elapsed_train, elapsed_query, labeled_indices)
+                                                    elapsed_train, elapsed_query, labeled_indices, semi_sup)
 
     def _active_learning_for_learner_strategy(self, label: str, learner: Optional[BaseEstimator],
                                               sampling_strategy: Callable, active_learning_data: ActiveLearningData,
@@ -415,7 +418,7 @@ class NetworkIntrusionDetection:
 
     def _semi_supervised(self, label: str) -> List[Stats]:
         return [
-            self._active_learning_for_learner_strategy(label, None, sampling_strategy,
+            self._active_learning_for_learner_strategy(label, LabelSpreading, sampling_strategy,
                                                        self._active_learning_data_split(label), semi_sup=True)
             for sampling_strategy in self.active_learning_strategies]
 
