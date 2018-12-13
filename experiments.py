@@ -1,12 +1,12 @@
 import os
 import pickle
-import warnings
 from time import time
 from typing import Dict, Iterable, Union, Optional, List, Callable, Tuple, NamedTuple
 
 import numpy as np
 import pandas as pd
 import requests
+import matplotlib.pyplot as plt
 from modAL.models import ActiveLearner
 from modAL.uncertainty import entropy_sampling
 from pandas.core.frame import DataFrame
@@ -47,6 +47,8 @@ def random_sampling(_, x_pool):
 
 class NetworkIntrusionDetection:
     def __init__(self):
+        util.ignore_warnings([ConvergenceWarning, UndefinedMetricWarning])
+
         # config
         self.label_col = config.label_col
         self.label_normal = config.label_normal
@@ -72,7 +74,8 @@ class NetworkIntrusionDetection:
         self.semi_supervised_class = LabelSpreading
         self.semi_supervised_class_args = {'kernel': 'knn', 'max_iter': 5, 'n_jobs': -1}
         self.ensemble_weights = {'rf': 2, 'lr': 1, 'iforest': 1, 'gb': 1}
-        util.ignore_warnings([ConvergenceWarning, UndefinedMetricWarning])
+        self.round_to = config.round_to
+        self.verbose = config.verbose
 
         np.random.seed(self.random_seed)
 
@@ -285,7 +288,8 @@ class NetworkIntrusionDetection:
         file_path_pkl = f'{self.results_folder}/{file_path}.pkl'
         file_path_csv = f'{self.results_folder}/{file_path}.csv'
         self._check_directory_exists(file_path_pkl)
-        print(f'Label: {label}, learner: {learner_name}, sampling strategy: {sampling_strategy_name}')
+        if self.verbose:
+            print(f'Label: {label}, learner: {learner_name}, sampling strategy: {sampling_strategy_name}')
         return file_path_pkl, file_path_csv, learner_name, sampling_strategy_name
 
     def _active_learning_initial_training(self, semi_sup: bool, stats: Stats, data_for_plotting: List[Stats],
@@ -361,7 +365,7 @@ class NetworkIntrusionDetection:
     def _active_learning_single_query(self, i: int, semi_sup: bool, clf: ActiveSemiSup, sampling_strategy: Callable,
                                       active_learning_data: ActiveLearningData, stats: Stats,
                                       data_for_plotting: List[Stats], labeled_indices: List[int]):
-        if i % self.active_learning_print_every == 0:
+        if self.verbose and i % self.active_learning_print_every == 0:
             print(f'Query # {i + 1} to the analyst')
 
         if semi_sup:
@@ -387,7 +391,8 @@ class NetworkIntrusionDetection:
         labeled_indices = []
 
         if os.path.exists(file_path_pkl):
-            print('Already exists in cache, returning...')
+            if self.verbose:
+                print('Available, retrieving...')
             return util.unpickle(file_path_pkl)
 
         # initialize stats
@@ -428,7 +433,7 @@ class NetworkIntrusionDetection:
 
     def _ensemble_predictions(self, rf: ActiveLearner, lr: ActiveLearner, gb: GradientBoostingClassifier,
                               iforest: IsolationForest,
-                              active_learning_data: ActiveLearningData):
+                              active_learning_data: ActiveLearningData) -> np.ndarray:
         x_dev = active_learning_data.x_dev
         threshold = sum(self.ensemble_weights.values()) / 2
 
@@ -439,14 +444,16 @@ class NetworkIntrusionDetection:
             gb.predict(x_dev) * self.ensemble_weights['gb']
         ]).sum(axis=0) >= threshold
 
-    def _generate_report(self, f: Callable):
-        return pd.concat(pd.DataFrame(f(label)) for label in self.features)
+    def _generate_report(self, f: Callable, report_name: str):
+        df = pd.concat(pd.DataFrame(f(label)) for label in self.features)
+        util.write_as_csv(df, f'{self.results_folder}/report_{report_name}.csv')
+        return df
 
     def report_active_learning(self) -> DataFrame:
-        return self._generate_report(self._active_learning)
+        return self._generate_report(self._active_learning, report_name='active_learning')
 
     def report_semi_supervised(self) -> DataFrame:
-        return self._generate_report(self._semi_supervised)
+        return self._generate_report(self._semi_supervised, report_name='semi_supervised')
 
     def _ensemble(self, label: str) -> List[Stats]:
         active_learning_data = self._active_learning_data_split(label)
@@ -455,7 +462,8 @@ class NetworkIntrusionDetection:
                                                                                                    VotingClassifier([]),
                                                                                                    entropy_sampling)
         if os.path.exists(file_path_pkl):
-            print('Already exists in cache, returning...')
+            if self.verbose:
+                print('Available, retrieving...')
             return [util.unpickle(file_path_pkl)]
 
         # supervised
@@ -476,7 +484,7 @@ class NetworkIntrusionDetection:
         prevalence = len(active_learning_data.y_train_start[active_learning_data.y_train_start == True]) / len(
             active_learning_data.y_train_start)
         iforest = IsolationForest(contamination=prevalence, behaviour='new', n_estimators=self.clf_n_estimator)
-        x = pd.concat([active_learning_data.x_train_pool, active_learning_data.x_train_pool]).reset_index(drop=True)
+        x = pd.concat([active_learning_data.x_train_start, active_learning_data.x_train_pool]).reset_index(drop=True)
         iforest.fit(x)
 
         predictions = self._ensemble_predictions(rf, lr, iforest, gb, active_learning_data)
@@ -506,12 +514,13 @@ class NetworkIntrusionDetection:
         return [stats]
 
     def report_ensemble(self) -> DataFrame:
-        return self._generate_report(self._ensemble)
+        return self._generate_report(self._ensemble, 'ensemble_learning')
 
-    def report_baseline_oracle(self):
-        return pd.DataFrame([self._calculate_baseline_oracle(label) for label in self.features]).set_index('label')
+    def report_baseline_oracle(self) -> DataFrame:
+        df = self._generate_report(self._calculate_baseline_oracle, 'baseline_oracle')
+        return df.set_index('label')
 
-    def report_labels(self):
+    def report_labels(self) -> DataFrame:
         return pd.DataFrame(
             [
                 {
@@ -527,3 +536,58 @@ class NetworkIntrusionDetection:
                 for label in self.dfs_by_label
             ]
         ).set_index('label')
+
+    def report_active_learning_across_labels(self):
+        df_active_learning = self.report_active_learning()
+        return df_active_learning.groupby(['learner', 'sampling strategy']).agg([np.mean, np.std]).round(self.round_to)
+
+    def report_active_learning_query_time(self):
+        query_times = {}
+        for learner_name in map(lambda x: x.__class__.__name__, self.active_learning_learners):
+            for sampling_strategy_name in map(lambda x: x.__name__, self.active_learning_strategies):
+                concat = []
+                for label in self.features:
+                    label_clean = label.replace('.', '')
+                    file_path = f'{self.results_folder}/{label_clean}_{learner_name}_{sampling_strategy_name}'
+                    file_path_csv = f'{file_path}.csv'
+                    df = pd.read_csv(file_path_csv)
+                    concat += list(df['query time (s)'])
+
+                xs = pd.Series(concat)
+                mean = round(xs.mean(), 2)
+                std = round(xs.std(), 2)
+                query_times[(learner_name, sampling_strategy_name)] = {f'{mean}±{std}'}
+
+        return query_times
+
+    def plot_active_learning_time_series_overlapping(self, attribute: str, label: str, learner1: str, sampling1: str,
+                                                     learner2: str, sampling2: str,
+                                                     title: str, ylim: List[float], ylabel: str,
+                                                     legend: List[str]) -> None:
+        def get_df(learner, sampling):
+            return f'{self.results_folder}/{label}_{learner}_{sampling}_sampling.csv'
+
+        pd.read_csv(get_df(learner1, sampling1))[attribute].plot()
+        pd.read_csv(get_df(learner2, sampling2))[attribute].plot()
+        plt.ylim(ylim)
+        plt.ylabel(ylabel)
+        plt.xlabel('Number of queries to analyst')
+        plt.title(title)
+        plt.legend(legend)
+
+
+if __name__ == '__main__':
+    ni = NetworkIntrusionDetection()
+    print('Label stats')
+    print(ni.report_labels())
+    print('=' * 10)
+    print('Baseline and oracle')
+    df_baseline_oracle = ni.report_baseline_oracle()
+    print(df_baseline_oracle)
+    print('=' * 10)
+    print('Baseline and oracle mean across labels')
+    print(df_baseline_oracle.mean().round(2))
+    print('=' * 10)
+    print('Baseline and oracle std across labels')
+    print(df_baseline_oracle.mean().std(2))
+    print('=' * 10)
