@@ -1,5 +1,6 @@
 import os
 import pickle
+import warnings
 from time import time
 from typing import Dict, Iterable, Union, Optional, List, Callable, Tuple, NamedTuple
 
@@ -13,6 +14,7 @@ from pandas.core.series import Series
 from scipy.stats.distributions import entropy
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, IsolationForest, GradientBoostingClassifier, VotingClassifier
+from sklearn.exceptions import ConvergenceWarning, UndefinedMetricWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, average_precision_score, \
     confusion_matrix
@@ -70,6 +72,7 @@ class NetworkIntrusionDetection:
         self.semi_supervised_class = LabelSpreading
         self.semi_supervised_class_args = {'kernel': 'knn', 'max_iter': 5, 'n_jobs': -1}
         self.ensemble_weights = {'rf': 2, 'lr': 1, 'iforest': 1, 'gb': 1}
+        util.ignore_warnings([ConvergenceWarning, UndefinedMetricWarning])
 
         np.random.seed(self.random_seed)
 
@@ -445,9 +448,15 @@ class NetworkIntrusionDetection:
     def report_semi_supervised(self) -> DataFrame:
         return self._generate_report(self._semi_supervised)
 
-    def _ensemble(self, label: str) -> Stats:
+    def _ensemble(self, label: str) -> List[Stats]:
         active_learning_data = self._active_learning_data_split(label)
-        stats = self._initialize_stats(label, 'ensemble', 'entropy_sampling')
+        stats = self._initialize_stats(label, 'VotingClassifier', 'entropy_sampling')
+        file_path_pkl, file_path_csv, learner_name, sampling_strategy_name = self._get_output_path(label,
+                                                                                                   VotingClassifier([]),
+                                                                                                   entropy_sampling)
+        if os.path.exists(file_path_pkl):
+            print('Already exists in cache, returning...')
+            return [util.unpickle(file_path_pkl)]
 
         # supervised
         # active learners
@@ -491,13 +500,10 @@ class NetworkIntrusionDetection:
                 metrics = util.add_prefix_to_dict_keys(metrics, f'sample_{i+1}_')
                 stats = util.merge_dicts(stats, metrics)
 
-        file_path_pkl, file_path_csv, learner_name, sampling_strategy_name = self._get_output_path(label,
-                                                                                                   VotingClassifier([]),
-                                                                                                   entropy_sampling)
         util.pickle_object(stats, file_path_pkl)
         util.write_as_csv(pd.DataFrame(data_for_plotting), file_path_csv)
 
-        return stats
+        return [stats]
 
     def report_ensemble(self) -> DataFrame:
         return self._generate_report(self._ensemble)

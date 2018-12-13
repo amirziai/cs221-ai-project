@@ -1,4 +1,5 @@
 import pickle as pickle
+import warnings
 from functools import reduce
 from time import time
 from typing import Dict, Any, Tuple, Callable
@@ -30,3 +31,8 @@ def unpickle(path: str) -> Any:
 
 def write_as_csv(df: DataFrame, path: str) -> None:
     df.to_csv(path, index=False)
+
+
+def ignore_warnings(warnings_list):
+    for warning in warnings_list:
+        warnings.filterwarnings("ignore", category=warning)
