@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 import matplotlib.pyplot as plt
 from modAL.models import ActiveLearner
-from modAL.uncertainty import entropy_sampling
+from modAL.uncertainty import entropy_sampling, uncertainty_sampling
 from pandas.core.frame import DataFrame
 from pandas.core.series import Series
 from scipy.stats.distributions import entropy
@@ -68,7 +68,7 @@ class NetworkIntrusionDetection:
         self.active_learning_lr = LogisticRegression(solver='lbfgs', random_state=self.random_seed)
         self.active_learning_gb = GradientBoostingClassifier(n_estimators=self.clf_n_estimator)
         self.active_learning_learners = [self.active_learning_rf, self.active_learning_lr]
-        self.active_learning_strategies = [random_sampling, entropy_sampling]
+        self.active_learning_strategies = [random_sampling, entropy_sampling, uncertainty_sampling]
         self.active_learning_log_intervals = {1, 10, 25, 50, 100}
         self.active_learning_print_every = 25
         self.semi_supervised_class = LabelSpreading
@@ -158,7 +158,7 @@ class NetworkIntrusionDetection:
     def _get_y(self, df: DataFrame) -> Series:
         return df[self.label_col] != self.label_normal
 
-    def _calculate_baseline_oracle(self, label: str) -> Dict[str, Union[str, float]]:
+    def _calculate_baseline_oracle(self, label: str) -> List[Stats]:
         p = len(self.splits[label]['y_train'][self.splits[label]['y_train'] == True]) / len(
             self.splits[label]['y_train'])
         out = {'label': label, 'prevalence': p}
@@ -204,7 +204,7 @@ class NetworkIntrusionDetection:
         baseline_unsupervised = util.add_prefix_to_dict_keys(baseline_unsupervised, 'baseline_unsupervised_')
         out = util.merge_dicts(out, baseline_unsupervised)
 
-        return out
+        return [out]
 
     def _active_learning_data_split(self, label: str) -> ActiveLearningData:
         x_train: DataFrame = self.splits[label]['x_train']

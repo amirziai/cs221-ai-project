@@ -28,4 +28,3 @@ round_to = 2
 
 # sanity checks
 assert 0.5 < size_train + size_dev < 1, "check data split %"
-
