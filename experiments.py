@@ -459,7 +459,7 @@ class NetworkIntrusionDetection:
         data_for_plotting = []
         learner = self.active_learning_rf
 
-        # TERRIBLE hack to pass the name of the sampling strategy as iforest
+        # TERRIBLE hack to pass the name of the sampling strategy
         def iforest_sampling(contamination):
             return IsolationForest(contamination=contamination, n_estimators=self.clf_n_estimator, behaviour='new',
                                    n_jobs=-1, random_state=self.random_seed)
@@ -666,5 +666,6 @@ if __name__ == '__main__':
     print('=' * 10)
     print('Ensemble learning')
     print(ni.report_ensemble())
-    # TODO: isolation forest sampling
-
+    print('=' * 10)
+    print('Isolation forest sampling strategy')
+    print(ni.report_learn_anomalies())
