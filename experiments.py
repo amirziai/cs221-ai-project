@@ -3,10 +3,10 @@ import pickle
 from time import time
 from typing import Dict, Iterable, Union, Optional, List, Callable, Tuple, NamedTuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-import matplotlib.pyplot as plt
 from modAL.models import ActiveLearner
 from modAL.uncertainty import entropy_sampling, uncertainty_sampling
 from pandas.core.frame import DataFrame
@@ -455,6 +455,69 @@ class NetworkIntrusionDetection:
     def report_semi_supervised(self) -> DataFrame:
         return self._generate_report(self._semi_supervised, report_name='semi_supervised')
 
+    def _learn_anomalies(self, label: str) -> List[Stats]:
+        data_for_plotting = []
+        learner = self.active_learning_rf
+
+        # TERRIBLE hack to pass the name of the sampling strategy as iforest
+        def iforest_sampling(contamination):
+            return IsolationForest(contamination=contamination, n_estimators=self.clf_n_estimator, behaviour='new',
+                                   n_jobs=-1, random_state=self.random_seed)
+
+        file_path_pkl, file_path_csv, learner_name, sampling_strategy_name = self._get_output_path(label, learner,
+                                                                                                   iforest_sampling)
+
+        if os.path.exists(file_path_pkl):
+            if self.verbose:
+                print('Available, retrieving...')
+            return util.unpickle(file_path_pkl)
+
+        active_learning_data = self._active_learning_data_split(label)
+        x_dev = active_learning_data.x_dev
+        x_train_start = active_learning_data.x_train_start
+        y_train_start = active_learning_data.y_train_start
+
+        # initialize stats
+        stats = self._initialize_stats(label, learner_name, sampling_strategy_name)
+
+        def update_stats(stats_, data_for_plotting_, prefix, x_, y_, i_):
+            learner.fit(x_, y_)
+            predicted = learner.predict(x_dev)
+            scores = learner.predict_proba(x_dev)[:, 1]
+            metrics = self._get_metrics(actual=active_learning_data.y_dev, predicted=predicted, scores=scores)
+            data_for_plotting_.append(self._get_plotting_row(i_, metrics, elapsed_train=0, elapsed_query=0))
+            metrics = util.add_prefix_to_dict_keys(metrics, prefix)
+            stats_ = util.merge_dicts(stats_, metrics)
+            return stats_, data_for_plotting_
+
+        # initial training
+        stats, data_for_plotting = update_stats(stats, data_for_plotting, 'initial_', x_train_start, y_train_start, -1)
+
+        # isolation forest
+        y_train_start = active_learning_data.y_train_start
+        prevalence = len(y_train_start[y_train_start == True]) / len(y_train_start)
+        iforest = iforest_sampling(prevalence)
+        iforest.fit(pd.concat([active_learning_data.x_train_start, active_learning_data.x_train_pool]))
+        anomaly_indices_sorted = np.argsort(iforest.score_samples(active_learning_data.x_train_pool))
+
+        # pretend that we're active learning
+        # however we're just going through a sorted list of anomalies (starting with the most anomalous)
+        for i in range(self.active_learning_budget):
+            x_extra = active_learning_data.x_train_pool.iloc[anomaly_indices_sorted[:i + 1]]
+            y_extra = active_learning_data.y_train_pool.iloc[anomaly_indices_sorted[:i + 1]]
+            x = pd.concat([active_learning_data.x_train_start, x_extra])
+            y = pd.concat([active_learning_data.y_train_start, y_extra])
+            stats, data_for_plotting = update_stats(stats, data_for_plotting, f'sample_{i+1}_', x, y, i)
+
+        # persist the results
+        util.pickle_object(stats, file_path_pkl)
+        util.write_as_csv(pd.DataFrame(data_for_plotting), file_path_csv)
+
+        return [stats]
+
+    def report_learn_anomalies(self) -> DataFrame:
+        return self._generate_report(self._learn_anomalies, report_name='learn_anomalies')
+
     def _ensemble(self, label: str) -> List[Stats]:
         active_learning_data = self._active_learning_data_split(label)
         stats = self._initialize_stats(label, 'VotingClassifier', 'entropy_sampling')
@@ -577,6 +640,7 @@ class NetworkIntrusionDetection:
 
 
 if __name__ == '__main__':
+    print('Loading the data...')
     ni = NetworkIntrusionDetection()
     print('Label stats')
     print(ni.report_labels())
@@ -589,7 +653,7 @@ if __name__ == '__main__':
     print(df_baseline_oracle.mean().round(2))
     print('=' * 10)
     print('Baseline and oracle std across labels')
-    print(df_baseline_oracle.mean().std(2))
+    print(df_baseline_oracle.std().round(2))
     print('=' * 10)
     print('Active learning')
     print(ni.report_active_learning())
@@ -599,3 +663,8 @@ if __name__ == '__main__':
     print('=' * 10)
     print('Active learning query time')
     print(ni.report_active_learning_query_time())
+    print('=' * 10)
+    print('Ensemble learning')
+    print(ni.report_ensemble())
+    # TODO: isolation forest sampling
+
